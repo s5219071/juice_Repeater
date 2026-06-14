@@ -88,7 +88,7 @@ jobs:
 
           binary="${plugin}/Contents/MacOS/JuiceRepeater"
           lipo -info "${binary}"
-          lipo -verify_arch arm64 x86_64 "${binary}"
+          lipo "${binary}" -verify_arch arm64 x86_64
 
           mkdir -p package
           cp -R "${plugin}" package/
