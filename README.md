@@ -58,3 +58,5 @@ cmake --build build --config Release --target JuiceEQ_VST3
 macOS 공개 배포에는 Apple Developer ID 서명과 notarization 설정이 추가로 필요합니다.
 
 # juice_V_processor
+
+# juice_Repeater

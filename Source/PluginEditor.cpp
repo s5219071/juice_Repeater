@@ -1,57 +1,38 @@
 #include "PluginEditor.h"
 
-#include <algorithm>
+#include <array>
 #include <cmath>
-#include <cstring>
 
 namespace
 {
-    const auto background = juce::Colour::fromString ("ff090b10");
-    const auto panel = juce::Colour::fromString ("ff10141c");
-    const auto panelLight = juce::Colour::fromString ("ff171d27");
-    const auto grid = juce::Colour::fromString ("ff29313d");
-    const auto gold = juce::Colour::fromString ("ffffc857");
-    const auto warmGold = juce::Colour::fromString ("ffffa928");
-    const auto aqua = juce::Colour::fromString ("ff55d9d2");
-    const auto text = juce::Colour::fromString ("ffe8edf2");
-    const auto muted = juce::Colour::fromString ("ff788596");
+    const auto background = juce::Colour::fromString ("ff121212");
+    const auto panel = juce::Colour::fromString ("ff191919");
+    const auto panelEdge = juce::Colour::fromString ("ff30363a");
+    const auto neon = juce::Colour::fromString ("ff00fbff");
+    const auto text = juce::Colour::fromString ("fff2f7f7");
+    const auto muted = juce::Colour::fromString ("ff788487");
 
-    constexpr float minimumFrequency = 20.0f;
-    constexpr float maximumFrequency = 20000.0f;
-    constexpr float graphMinimumDb = -24.0f;
-    constexpr float graphMaximumDb = 24.0f;
-    constexpr float knobStart = juce::MathConstants<float>::pi * 1.20f;
-    constexpr float knobEnd = juce::MathConstants<float>::pi * 2.80f;
+    constexpr float knobStart = juce::MathConstants<float>::pi * 1.22f;
+    constexpr float knobEnd = juce::MathConstants<float>::pi * 2.78f;
 
-    juce::String formatFrequency (float frequency)
-    {
-        return frequency >= 1000.0f
-                   ? juce::String (frequency / 1000.0f, frequency >= 10000.0f ? 0 : 1) + "k"
-                   : juce::String (static_cast<int> (frequency));
-    }
+    const std::array<juce::String, 5> lengthNames { "1/1", "1/2", "1/4", "1/8", "1/16" };
 }
 
-JuiceEQAudioProcessorEditor::VocalLookAndFeel::VocalLookAndFeel()
+JuiceRepeaterAudioProcessorEditor::RepeaterLookAndFeel::RepeaterLookAndFeel()
 {
-    setColour (juce::Slider::textBoxTextColourId, text);
-    setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
-    setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-    setColour (juce::ComboBox::backgroundColourId, panelLight);
-    setColour (juce::ComboBox::outlineColourId, gold.withAlpha (0.35f));
-    setColour (juce::ComboBox::textColourId, text);
-    setColour (juce::ComboBox::arrowColourId, gold);
-    setColour (juce::PopupMenu::backgroundColourId, panelLight);
-    setColour (juce::PopupMenu::textColourId, text);
-    setColour (juce::PopupMenu::highlightedBackgroundColourId, gold.withAlpha (0.22f));
+    setColour (juce::Slider::textBoxTextColourId, neon);
+    setColour (juce::Slider::textBoxBackgroundColourId, panel);
+    setColour (juce::Slider::textBoxOutlineColourId, panelEdge);
+    setColour (juce::Slider::textBoxHighlightColourId, neon.withAlpha (0.25f));
 }
 
-void JuiceEQAudioProcessorEditor::VocalLookAndFeel::drawRotarySlider (
+void JuiceRepeaterAudioProcessorEditor::RepeaterLookAndFeel::drawRotarySlider (
     juce::Graphics& g,
     int x,
     int y,
     int width,
     int height,
-    float position,
+    float sliderPosition,
     float rotaryStartAngle,
     float rotaryEndAngle,
     juce::Slider&)
@@ -60,447 +41,219 @@ void JuiceEQAudioProcessorEditor::VocalLookAndFeel::drawRotarySlider (
                                           static_cast<float> (y),
                                           static_cast<float> (width),
                                           static_cast<float> (height))
-                      .reduced (12.0f);
+                      .reduced (18.0f);
     const float diameter = juce::jmin (bounds.getWidth(), bounds.getHeight());
-    auto dial = juce::Rectangle<float> (diameter, diameter).withCentre (bounds.getCentre());
+    const auto dial = juce::Rectangle<float> (diameter, diameter).withCentre (bounds.getCentre());
+    const auto centre = dial.getCentre();
     const float radius = diameter * 0.5f;
-    const float angle = rotaryStartAngle + position * (rotaryEndAngle - rotaryStartAngle);
+    const float angle = rotaryStartAngle + sliderPosition * (rotaryEndAngle - rotaryStartAngle);
 
-    juce::ColourGradient shadow (juce::Colours::black.withAlpha (0.75f),
-                                 dial.getCentreX(),
-                                 dial.getBottom(),
-                                 panelLight,
-                                 dial.getCentreX(),
-                                 dial.getY(),
-                                 false);
-    g.setGradientFill (shadow);
-    g.fillEllipse (dial.translated (0.0f, 4.0f));
+    g.setColour (juce::Colours::black.withAlpha (0.65f));
+    g.fillEllipse (dial.translated (0.0f, 7.0f));
 
-    juce::ColourGradient face (panelLight.brighter (0.08f),
-                               dial.getCentreX() - radius * 0.4f,
+    juce::ColourGradient face (juce::Colour::fromString ("ff303437"),
+                               centre.x - radius * 0.45f,
                                dial.getY(),
-                               background,
-                               dial.getCentreX() + radius * 0.5f,
+                               juce::Colour::fromString ("ff090a0a"),
+                               centre.x + radius * 0.45f,
                                dial.getBottom(),
                                false);
     g.setGradientFill (face);
     g.fillEllipse (dial);
 
     juce::Path track;
-    track.addCentredArc (dial.getCentreX(), dial.getCentreY(), radius - 8.0f, radius - 8.0f,
+    track.addCentredArc (centre.x, centre.y, radius - 7.0f, radius - 7.0f,
                          0.0f, rotaryStartAngle, rotaryEndAngle, true);
-    g.setColour (grid.withAlpha (0.9f));
+    g.setColour (panelEdge);
     g.strokePath (track, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved,
                                                juce::PathStrokeType::rounded));
 
-    juce::Path value;
-    value.addCentredArc (dial.getCentreX(), dial.getCentreY(), radius - 8.0f, radius - 8.0f,
-                         0.0f, rotaryStartAngle, angle, true);
-    g.setColour (gold.withAlpha (0.18f));
-    g.strokePath (value, juce::PathStrokeType (11.0f, juce::PathStrokeType::curved,
-                                               juce::PathStrokeType::rounded));
-    g.setColour (gold);
-    g.strokePath (value, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
-                                               juce::PathStrokeType::rounded));
+    juce::Path valueArc;
+    valueArc.addCentredArc (centre.x, centre.y, radius - 7.0f, radius - 7.0f,
+                            0.0f, rotaryStartAngle, angle, true);
+    g.setColour (neon.withAlpha (0.16f));
+    g.strokePath (valueArc, juce::PathStrokeType (13.0f, juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
+    g.setColour (neon);
+    g.strokePath (valueArc, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
 
-    for (int tick = 0; tick <= 20; ++tick)
+    for (int index = 0; index < 5; ++index)
     {
-        const float tickPosition = static_cast<float> (tick) / 20.0f;
-        const float tickAngle = rotaryStartAngle + tickPosition * (rotaryEndAngle - rotaryStartAngle);
-        const float innerRadius = radius - (tick % 5 == 0 ? 22.0f : 18.0f);
-        const float outerRadius = radius - 13.0f;
-        const auto centre = dial.getCentre();
-        const juce::Point<float> inner (centre.x + std::cos (tickAngle) * innerRadius,
-                                        centre.y + std::sin (tickAngle) * innerRadius);
-        const juce::Point<float> outer (centre.x + std::cos (tickAngle) * outerRadius,
-                                        centre.y + std::sin (tickAngle) * outerRadius);
-        g.setColour (tickPosition <= position ? gold.withAlpha (0.75f) : muted.withAlpha (0.28f));
-        g.drawLine ({ inner, outer }, tick % 5 == 0 ? 1.6f : 1.0f);
+        const float proportion = static_cast<float> (index) / 4.0f;
+        const float tickAngle = rotaryStartAngle + proportion * (rotaryEndAngle - rotaryStartAngle);
+        const float inner = radius - 22.0f;
+        const float outer = radius - 12.0f;
+        const juce::Point<float> start (centre.x + std::cos (tickAngle) * inner,
+                                        centre.y + std::sin (tickAngle) * inner);
+        const juce::Point<float> end (centre.x + std::cos (tickAngle) * outer,
+                                      centre.y + std::sin (tickAngle) * outer);
+        g.setColour (proportion <= sliderPosition ? neon : muted.withAlpha (0.45f));
+        g.drawLine ({ start, end }, 2.0f);
     }
 
     juce::Path pointer;
-    pointer.addRoundedRectangle (-2.5f, -radius + 29.0f, 5.0f, radius * 0.40f, 2.5f);
-    pointer.applyTransform (juce::AffineTransform::rotation (angle)
-                                .translated (dial.getCentreX(), dial.getCentreY()));
-    g.setColour (warmGold);
+    pointer.addRoundedRectangle (-2.5f, -radius + 29.0f, 5.0f, radius * 0.42f, 2.5f);
+    pointer.applyTransform (
+        juce::AffineTransform::rotation (angle).translated (centre.x, centre.y));
+    g.setColour (text);
     g.fillPath (pointer);
 
-    g.setColour (gold.withAlpha (0.30f));
+    g.setColour (neon.withAlpha (0.35f));
     g.drawEllipse (dial.reduced (1.0f), 1.0f);
 }
 
-void JuiceEQAudioProcessorEditor::VocalLookAndFeel::drawComboBox (
+void JuiceRepeaterAudioProcessorEditor::RepeaterLookAndFeel::drawToggleButton (
     juce::Graphics& g,
-    int width,
-    int height,
-    bool,
-    int,
-    int,
-    int,
-    int,
-    juce::ComboBox&)
+    juce::ToggleButton& button,
+    bool shouldDrawButtonAsHighlighted,
+    bool shouldDrawButtonAsDown)
 {
-    const auto bounds = juce::Rectangle<float> (0.0f, 0.0f,
-                                                static_cast<float> (width),
-                                                static_cast<float> (height))
-                            .reduced (0.5f);
-    g.setColour (panelLight);
-    g.fillRoundedRectangle (bounds, 5.0f);
-    g.setColour (gold.withAlpha (0.40f));
-    g.drawRoundedRectangle (bounds, 5.0f, 1.0f);
+    auto area = button.getLocalBounds().toFloat().reduced (5.0f);
+    auto switchArea = area.removeFromTop (44.0f).withSizeKeepingCentre (86.0f, 36.0f);
+    const bool enabled = button.getToggleState();
 
-    juce::Path arrow;
-    const float cx = static_cast<float> (width - 13);
-    const float cy = static_cast<float> (height) * 0.5f;
-    arrow.startNewSubPath (cx - 3.5f, cy - 2.0f);
-    arrow.lineTo (cx, cy + 2.0f);
-    arrow.lineTo (cx + 3.5f, cy - 2.0f);
-    g.setColour (gold);
-    g.strokePath (arrow, juce::PathStrokeType (1.5f));
-}
+    g.setColour (enabled ? neon.withAlpha (0.22f) : panel);
+    g.fillRoundedRectangle (switchArea, switchArea.getHeight() * 0.5f);
+    g.setColour (enabled ? neon : panelEdge.brighter (0.18f));
+    g.drawRoundedRectangle (switchArea.reduced (0.75f), switchArea.getHeight() * 0.5f,
+                            shouldDrawButtonAsHighlighted ? 2.0f : 1.2f);
 
-void JuiceEQAudioProcessorEditor::VocalLookAndFeel::positionComboBoxText (
-    juce::ComboBox& box, juce::Label& label)
-{
-    label.setBounds (box.getLocalBounds().reduced (8, 1).withTrimmedRight (15));
-    label.setFont (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)));
-}
+    const float knobSize = switchArea.getHeight() - 10.0f;
+    const float knobX = enabled ? switchArea.getRight() - knobSize - 5.0f
+                                : switchArea.getX() + 5.0f;
+    g.setColour (shouldDrawButtonAsDown ? neon.darker (0.25f)
+                                        : (enabled ? neon : muted));
+    g.fillEllipse (knobX, switchArea.getY() + 5.0f, knobSize, knobSize);
 
-JuiceEQAudioProcessorEditor::SpectrumDisplay::SpectrumDisplay (JuiceEQAudioProcessor& p)
-    : processor (p)
-{
-    history.fill (0.0f);
-    spectrumDb.fill (-100.0f);
-    setInterceptsMouseClicks (false, false);
-}
+    g.setColour (enabled ? neon : text);
+    g.setFont (juce::Font (juce::FontOptions (15.0f, juce::Font::bold)));
+    g.drawText (button.getButtonText(), area, juce::Justification::centredTop);
 
-void JuiceEQAudioProcessorEditor::SpectrumDisplay::refresh()
-{
-    const int pulled = processor.pullAnalyzerSamples (pullBuffer.data(), pullBufferSize);
-
-    if (pulled > 0)
-    {
-        const int copyCount = juce::jmin (pulled, fftSize);
-        const int keepCount = fftSize - copyCount;
-        std::memmove (history.data(), history.data() + copyCount,
-                      static_cast<size_t> (keepCount) * sizeof (float));
-        std::memcpy (history.data() + keepCount, pullBuffer.data() + pulled - copyCount,
-                     static_cast<size_t> (copyCount) * sizeof (float));
-        samplesSinceLastTransform += pulled;
-    }
-
-    if (samplesSinceLastTransform >= fftSize / 4)
-    {
-        samplesSinceLastTransform = 0;
-        updateSpectrum();
-    }
-
-    repaint();
-}
-
-void JuiceEQAudioProcessorEditor::SpectrumDisplay::updateSpectrum()
-{
-    std::copy (history.begin(), history.end(), fftData.begin());
-    std::fill (fftData.begin() + fftSize, fftData.end(), 0.0f);
-    window.multiplyWithWindowingTable (fftData.data(), fftSize);
-    fft.performFrequencyOnlyForwardTransform (fftData.data());
-
-    const double sampleRate = processor.getCurrentSampleRate();
-
-    for (int index = 0; index < displayBins; ++index)
-    {
-        const float proportion = static_cast<float> (index) / static_cast<float> (displayBins - 1);
-        const float frequency = minimumFrequency
-                                * std::pow (maximumFrequency / minimumFrequency, proportion);
-        const int fftBin = juce::jlimit (
-            1, fftBins - 1, static_cast<int> (std::round (frequency * fftSize / sampleRate)));
-        const float target = juce::Decibels::gainToDecibels (
-            fftData[static_cast<size_t> (fftBin)] / static_cast<float> (fftSize), -100.0f);
-        const float previous = spectrumDb[static_cast<size_t> (index)];
-        spectrumDb[static_cast<size_t> (index)] = target > previous
-                                                      ? previous * 0.35f + target * 0.65f
-                                                      : previous * 0.88f + target * 0.12f;
-    }
-}
-
-float JuiceEQAudioProcessorEditor::SpectrumDisplay::frequencyToX (
-    float frequency, juce::Rectangle<float> bounds) const noexcept
-{
-    const float proportion = std::log (frequency / minimumFrequency)
-                             / std::log (maximumFrequency / minimumFrequency);
-    return bounds.getX() + bounds.getWidth() * proportion;
-}
-
-float JuiceEQAudioProcessorEditor::SpectrumDisplay::decibelsToY (
-    float decibels, juce::Rectangle<float> bounds) const noexcept
-{
-    return juce::jmap (juce::jlimit (graphMinimumDb, graphMaximumDb, decibels),
-                       graphMaximumDb, graphMinimumDb, bounds.getY(), bounds.getBottom());
-}
-
-void JuiceEQAudioProcessorEditor::SpectrumDisplay::paint (juce::Graphics& g)
-{
-    auto bounds = getLocalBounds().toFloat();
-    g.setColour (panel);
-    g.fillRoundedRectangle (bounds, 8.0f);
-    g.setColour (grid.withAlpha (0.8f));
-    g.drawRoundedRectangle (bounds.reduced (0.5f), 8.0f, 1.0f);
-
-    auto graph = bounds.reduced (42.0f, 22.0f);
-    graph.removeFromBottom (7.0f);
-    drawGrid (g, graph);
-    drawSpectrum (g, graph);
-    drawResponse (g, graph);
-    drawBandMarkers (g, graph);
-}
-
-void JuiceEQAudioProcessorEditor::SpectrumDisplay::drawGrid (
-    juce::Graphics& g, juce::Rectangle<float> bounds)
-{
-    constexpr std::array<float, 10> frequencies {
-        20.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f
-    };
-
+    g.setColour (muted);
     g.setFont (juce::Font (juce::FontOptions (10.0f)));
-
-    for (const float frequency : frequencies)
-    {
-        const float x = frequencyToX (frequency, bounds);
-        g.setColour (grid.withAlpha (frequency == 20.0f || frequency == 20000.0f ? 0.7f : 0.45f));
-        g.drawVerticalLine (static_cast<int> (std::round (x)), bounds.getY(), bounds.getBottom());
-        g.setColour (muted);
-        g.drawText (formatFrequency (frequency),
-                    juce::Rectangle<float> (x - 22.0f, bounds.getBottom() + 4.0f, 44.0f, 14.0f),
-                    juce::Justification::centred);
-    }
-
-    for (int db = -24; db <= 24; db += 6)
-    {
-        const float y = decibelsToY (static_cast<float> (db), bounds);
-        g.setColour (db == 0 ? gold.withAlpha (0.22f) : grid.withAlpha (0.42f));
-        g.drawHorizontalLine (static_cast<int> (std::round (y)), bounds.getX(), bounds.getRight());
-        g.setColour (muted.withAlpha (0.8f));
-        g.drawText ((db > 0 ? "+" : "") + juce::String (db),
-                    juce::Rectangle<float> (4.0f, y - 7.0f, 32.0f, 14.0f),
-                    juce::Justification::centredRight);
-    }
+    g.drawText (enabled ? "5 ms S-CURVE" : "HARD WRAP",
+                area.translated (0.0f, 23.0f),
+                juce::Justification::centredTop);
 }
 
-void JuiceEQAudioProcessorEditor::SpectrumDisplay::drawSpectrum (
-    juce::Graphics& g, juce::Rectangle<float> bounds)
-{
-    juce::Path line;
-    juce::Path fill;
-
-    for (int index = 0; index < displayBins; ++index)
-    {
-        const float proportion = static_cast<float> (index) / static_cast<float> (displayBins - 1);
-        const float frequency = minimumFrequency
-                                * std::pow (maximumFrequency / minimumFrequency, proportion);
-        const float x = frequencyToX (frequency, bounds);
-        const float analyzerDb = juce::jmap (spectrumDb[static_cast<size_t> (index)],
-                                             -100.0f, 0.0f, graphMinimumDb, graphMaximumDb);
-        const float y = decibelsToY (analyzerDb, bounds);
-
-        if (index == 0)
-        {
-            line.startNewSubPath (x, y);
-            fill.startNewSubPath (x, bounds.getBottom());
-            fill.lineTo (x, y);
-        }
-        else
-        {
-            line.lineTo (x, y);
-            fill.lineTo (x, y);
-        }
-    }
-
-    fill.lineTo (bounds.getRight(), bounds.getBottom());
-    fill.closeSubPath();
-    g.setColour (aqua.withAlpha (0.07f));
-    g.fillPath (fill);
-    g.setColour (aqua.withAlpha (0.34f));
-    g.strokePath (line, juce::PathStrokeType (1.2f, juce::PathStrokeType::curved,
-                                              juce::PathStrokeType::rounded));
-}
-
-void JuiceEQAudioProcessorEditor::SpectrumDisplay::drawResponse (
-    juce::Graphics& g, juce::Rectangle<float> bounds)
-{
-    juce::Path response;
-    constexpr int points = 420;
-
-    for (int point = 0; point < points; ++point)
-    {
-        const float proportion = static_cast<float> (point) / static_cast<float> (points - 1);
-        const float frequency = minimumFrequency
-                                * std::pow (maximumFrequency / minimumFrequency, proportion);
-        const float x = frequencyToX (frequency, bounds);
-        const float y = decibelsToY (processor.getMagnitudeResponseDb (frequency), bounds);
-
-        if (point == 0)
-            response.startNewSubPath (x, y);
-        else
-            response.lineTo (x, y);
-    }
-
-    g.setColour (gold.withAlpha (0.15f));
-    g.strokePath (response, juce::PathStrokeType (8.0f, juce::PathStrokeType::curved,
-                                                  juce::PathStrokeType::rounded));
-    g.setColour (gold);
-    g.strokePath (response, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved,
-                                                  juce::PathStrokeType::rounded));
-}
-
-void JuiceEQAudioProcessorEditor::SpectrumDisplay::drawBandMarkers (
-    juce::Graphics& g, juce::Rectangle<float> bounds)
-{
-    constexpr std::array<float, 8> bandFrequencies {
-        110.0f, 200.0f, 450.0f, 2000.0f, 3600.0f, 8000.0f, 10000.0f, 20000.0f
-    };
-
-    for (int band = 0; band < static_cast<int> (bandFrequencies.size()); ++band)
-    {
-        const float frequency = bandFrequencies[static_cast<size_t> (band)];
-        const float x = frequencyToX (frequency, bounds);
-        const float y = decibelsToY (processor.getMagnitudeResponseDb (frequency), bounds);
-        const bool dynamic = band == 1 || band == 4 || band == 6;
-        const float radius = dynamic ? 5.5f : 4.0f;
-
-        g.setColour (dynamic ? aqua.withAlpha (0.18f) : gold.withAlpha (0.18f));
-        g.fillEllipse (x - radius * 1.8f, y - radius * 1.8f, radius * 3.6f, radius * 3.6f);
-        g.setColour (dynamic ? aqua : gold);
-        g.fillEllipse (x - radius, y - radius, radius * 2.0f, radius * 2.0f);
-        g.setColour (background);
-        g.setFont (juce::Font (juce::FontOptions (8.0f, juce::Font::bold)));
-        g.drawText (juce::String (band + 1),
-                    juce::Rectangle<float> (x - radius, y - radius, radius * 2.0f, radius * 2.0f),
-                    juce::Justification::centred);
-    }
-}
-
-JuiceEQAudioProcessorEditor::JuiceEQAudioProcessorEditor (JuiceEQAudioProcessor& processor)
+JuiceRepeaterAudioProcessorEditor::JuiceRepeaterAudioProcessorEditor (
+    JuiceRepeaterAudioProcessor& processor)
     : AudioProcessorEditor (&processor),
-      audioProcessor (processor),
-      spectrumDisplay (processor)
+      audioProcessor (processor)
 {
     setLookAndFeel (&lookAndFeel);
     setResizable (true, true);
-    setResizeLimits (860, 700, 1320, 940);
-    setSize (1040, 760);
+    setResizeLimits (560, 330, 900, 560);
+    setSize (680, 410);
 
-    addAndMakeVisible (spectrumDisplay);
+    lengthKnob.setName ("Length");
+    lengthKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    lengthKnob.setRotaryParameters (knobStart, knobEnd, true);
+    lengthKnob.setRange (0.0, 4.0, 1.0);
+    lengthKnob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 88, 28);
+    lengthKnob.setDoubleClickReturnValue (true, 2.0);
+    lengthKnob.textFromValueFunction = [] (double value)
+    {
+        return lengthNames[static_cast<size_t> (
+            juce::jlimit (0, 4, static_cast<int> (std::round (value))))];
+    };
+    lengthKnob.valueFromTextFunction = [] (const juce::String& value)
+    {
+        for (int index = 0; index < static_cast<int> (lengthNames.size()); ++index)
+            if (value.trim() == lengthNames[static_cast<size_t> (index)])
+                return static_cast<double> (index);
 
-    cleanKnob.setName ("Clean");
-    brightnessKnob.setName ("Brightness");
-    configureMainKnob (cleanKnob, " %");
-    configureMainKnob (brightnessKnob, " %");
+        return 2.0;
+    };
+    addAndMakeVisible (lengthKnob);
 
-    oversamplingBox.addItemList ({ "1x", "2x", "4x", "8x" }, 1);
-    oversamplingBox.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (oversamplingBox);
+    softButton.setButtonText ("SOFT");
+    softButton.setClickingTogglesState (true);
+    addAndMakeVisible (softButton);
 
-    cleanAttachment = std::make_unique<SliderAttachment> (
-        audioProcessor.apvts, JuiceEQAudioProcessor::ParameterIDs::clean, cleanKnob);
-    brightnessAttachment = std::make_unique<SliderAttachment> (
-        audioProcessor.apvts, JuiceEQAudioProcessor::ParameterIDs::brightness, brightnessKnob);
-    oversamplingAttachment = std::make_unique<ComboBoxAttachment> (
-        audioProcessor.apvts, JuiceEQAudioProcessor::ParameterIDs::oversampling, oversamplingBox);
-
-    startTimerHz (30);
+    lengthAttachment = std::make_unique<SliderAttachment> (
+        audioProcessor.apvts, JuiceRepeaterAudioProcessor::ParameterIDs::length, lengthKnob);
+    softAttachment = std::make_unique<ButtonAttachment> (
+        audioProcessor.apvts, JuiceRepeaterAudioProcessor::ParameterIDs::soft, softButton);
 }
 
-JuiceEQAudioProcessorEditor::~JuiceEQAudioProcessorEditor()
+JuiceRepeaterAudioProcessorEditor::~JuiceRepeaterAudioProcessorEditor()
 {
-    stopTimer();
-    oversamplingAttachment = nullptr;
-    brightnessAttachment = nullptr;
-    cleanAttachment = nullptr;
+    softAttachment = nullptr;
+    lengthAttachment = nullptr;
     setLookAndFeel (nullptr);
 }
 
-void JuiceEQAudioProcessorEditor::configureMainKnob (juce::Slider& slider,
-                                                     const juce::String& suffix)
-{
-    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setRotaryParameters (knobStart, knobEnd, true);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 88, 24);
-    slider.setTextValueSuffix (suffix);
-    slider.setDoubleClickReturnValue (true, slider.getName() == "Clean" ? 100.0 : 25.0);
-    addAndMakeVisible (slider);
-}
-
-void JuiceEQAudioProcessorEditor::timerCallback()
-{
-    spectrumDisplay.refresh();
-    repaint();
-}
-
-void JuiceEQAudioProcessorEditor::paint (juce::Graphics& g)
+void JuiceRepeaterAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (background);
 
-    juce::ColourGradient topGlow (gold.withAlpha (0.10f),
-                                  static_cast<float> (getWidth()) * 0.5f,
-                                  0.0f,
-                                  juce::Colours::transparentBlack,
-                                  static_cast<float> (getWidth()) * 0.5f,
-                                  230.0f,
-                                  false);
-    g.setGradientFill (topGlow);
+    juce::ColourGradient glow (neon.withAlpha (0.12f),
+                               static_cast<float> (getWidth()) * 0.28f,
+                               80.0f,
+                               juce::Colours::transparentBlack,
+                               static_cast<float> (getWidth()) * 0.75f,
+                               static_cast<float> (getHeight()),
+                               true);
+    g.setGradientFill (glow);
     g.fillRect (getLocalBounds());
 
-    auto title = getLocalBounds().reduced (26).removeFromTop (48);
+    auto frame = getLocalBounds().toFloat().reduced (14.0f);
+    g.setColour (panel.withAlpha (0.72f));
+    g.fillRoundedRectangle (frame, 12.0f);
+    g.setColour (panelEdge);
+    g.drawRoundedRectangle (frame, 12.0f, 1.0f);
+
+    auto header = getLocalBounds().reduced (30).removeFromTop (62);
     g.setColour (text);
-    g.setFont (juce::Font (juce::FontOptions (23.0f, juce::Font::bold)));
-    g.drawText ("JUICE VOCAL RESTORER", title, juce::Justification::centredLeft);
+    g.setFont (juce::Font (juce::FontOptions (25.0f, juce::Font::bold)));
+    g.drawText ("JuiceRepeater", header, juce::Justification::centredLeft);
 
-    g.setColour (gold);
-    g.setFont (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)));
-    g.drawText ("FIXED EQ  /  DYNAMIC CLEANUP  /  ULTRA-AIR",
-                title, juce::Justification::centredRight);
+    g.setColour (neon);
+    g.setFont (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)));
+    g.drawText ("PPQ LOCKED  /  SAMPLE ACCURATE",
+                header,
+                juce::Justification::centredRight);
 
-    const auto cleanLabel = cleanKnob.getBounds().translated (0, -22);
-    const auto brightnessLabel = brightnessKnob.getBounds().translated (0, -22);
+    const float gridTop = 94.0f;
+    const float gridBottom = static_cast<float> (getHeight() - 38);
+    g.setColour (neon.withAlpha (0.055f));
+    for (float x = 28.0f; x < static_cast<float> (getWidth() - 28); x += 24.0f)
+        g.drawVerticalLine (static_cast<int> (x), gridTop, gridBottom);
+    for (float y = gridTop; y < gridBottom; y += 24.0f)
+        g.drawHorizontalLine (static_cast<int> (y), 28.0f, static_cast<float> (getWidth() - 28));
+
+    auto knobLabel = lengthKnob.getBounds().translated (0, -26);
     g.setColour (text);
     g.setFont (juce::Font (juce::FontOptions (15.0f, juce::Font::bold)));
-    g.drawText ("CLEAN", cleanLabel, juce::Justification::centredTop);
-    g.drawText ("BRIGHTNESS", brightnessLabel, juce::Justification::centredTop);
+    g.drawText ("LENGTH", knobLabel, juce::Justification::centredTop);
 
     g.setColour (muted);
     g.setFont (juce::Font (juce::FontOptions (10.0f)));
-    g.drawText ("GAIN SCALE  0-200%", cleanLabel.translated (0, 20), juce::Justification::centredTop);
-    g.drawText ("18 kHz+ TUBE AIR", brightnessLabel.translated (0, 20), juce::Justification::centredTop);
+    g.drawText ("HOST-SYNCED LOOP SIZE",
+                knobLabel.translated (0, 21),
+                juce::Justification::centredTop);
 
-    const auto optionLabel = oversamplingBox.getBounds().translated (0, -17);
-    g.setColour (muted);
-    g.setFont (juce::Font (juce::FontOptions (9.5f, juce::Font::bold)));
-    g.drawText ("OVERSAMPLING", optionLabel, juce::Justification::centredTop);
-
-    g.setColour (muted.withAlpha (0.75f));
-    g.setFont (juce::Font (juce::FontOptions (9.0f)));
+    g.setColour (muted.withAlpha (0.82f));
+    g.setFont (juce::Font (juce::FontOptions (9.5f)));
     g.drawText ("Made by Kino",
-                getLocalBounds().reduced (24).removeFromBottom (18),
+                getLocalBounds().reduced (25).removeFromBottom (18),
                 juce::Justification::centredRight);
 }
 
-void JuiceEQAudioProcessorEditor::resized()
+void JuiceRepeaterAudioProcessorEditor::resized()
 {
-    auto area = getLocalBounds().reduced (24);
-    area.removeFromTop (54);
-    area.removeFromBottom (20);
+    auto area = getLocalBounds().reduced (28);
+    area.removeFromTop (76);
+    area.removeFromBottom (22);
 
-    const int graphHeight = juce::jlimit (315, 500, static_cast<int> (area.getHeight() * 0.60f));
-    spectrumDisplay.setBounds (area.removeFromTop (graphHeight));
-    area.removeFromTop (24);
+    const int gap = juce::jlimit (34, 90, area.getWidth() / 9);
+    auto left = area.removeFromLeft ((area.getWidth() - gap) * 2 / 3);
+    area.removeFromLeft (gap);
 
-    const int knobSize = juce::jlimit (154, 220, area.getHeight() - 34);
-    const int gap = juce::jlimit (50, 130, area.getWidth() / 8);
-    const int totalWidth = knobSize * 2 + gap;
-    const int startX = getWidth() / 2 - totalWidth / 2;
-    const int knobY = area.getY();
-
-    cleanKnob.setBounds (startX, knobY, knobSize, knobSize);
-    brightnessKnob.setBounds (startX + knobSize + gap, knobY, knobSize, knobSize);
-    oversamplingBox.setBounds (getWidth() / 2 - 47, area.getBottom() - 28, 94, 24);
+    const int knobSize = juce::jmin (left.getWidth(), left.getHeight());
+    lengthKnob.setBounds (left.withSizeKeepingCentre (knobSize, knobSize));
+    softButton.setBounds (area.withSizeKeepingCentre (
+        juce::jmin (150, area.getWidth()), juce::jmin (104, area.getHeight())));
 }

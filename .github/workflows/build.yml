@@ -1,270 +1,104 @@
-﻿name: Build JuiceEQ VST3
-
-# ==============================================================================
-# GitHub Actions 빌드 워크플로우
-#
-# 이 파일은 GitHub 서버에서 Windows VST3와 macOS Universal VST3를 자동 빌드합니다.
-# 로컬 환경에 JUCE가 없어도 CMake가 JUCE를 내려받아 사용합니다.
-#
-# 실행 방법:
-# - GitHub 저장소의 Actions 탭에서 "Build Juice Vocal Restorer VST3"를 수동 실행합니다.
-# - main/master 브랜치에 push하면 자동으로 빌드합니다.
-# - v1.0.0 같은 태그를 push하면 GitHub Release를 만들 수 있습니다.
-# ==============================================================================
+name: Build JuiceRepeater VST3
 
 on:
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: "Build and publish a GitHub Release"
-        required: true
-        default: false
-        type: boolean
-      release_tag:
-        description: "Release tag used when publish_release is true"
-        required: true
-        default: "v1.0.0"
-        type: string
-
   push:
     branches:
       - main
       - master
     tags:
       - "v*"
-
   pull_request:
     branches:
       - main
       - master
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-windows-vst3:
-    name: Build Windows VST3
-    # windows-latest moved to the Visual Studio 2026 image in June 2026.
-    # Pin VS 2022 because the CMake generator below explicitly targets VS 17.
+  windows-vst3:
+    name: Windows x64 VST3
     runs-on: windows-2022
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show build tools
+      - name: Configure
         shell: pwsh
-        run: |
-          cmake --version
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -property installationPath
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 
-      - name: Configure CMake
+      - name: Build
         shell: pwsh
-        run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake --build build --config Release --target JuiceRepeater_VST3 --parallel
 
-      - name: Build VST3
-        shell: pwsh
-        run: |
-          cmake --build build --config Release --target JuiceEQ_VST3 --parallel
-
-      - name: Package Windows VST3
+      - name: Package
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $plugin = Get-ChildItem -Path build -Recurse -Directory -Filter "JuiceRepeater.vst3" |
+            Select-Object -First 1
 
-          $vst3 = Get-ChildItem -Path "build" -Recurse -Directory -Filter "Juice Vocal Restorer.vst3" | Select-Object -First 1
-
-          if ($null -eq $vst3) {
-            Write-Host "Build folder contents:"
-            Get-ChildItem -Path "build" -Recurse | Select-Object -ExpandProperty FullName
-            throw "Juice Vocal Restorer.vst3 was not found."
+          if ($null -eq $plugin) {
+            throw "JuiceRepeater.vst3 was not found."
           }
 
-          New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
-          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item -LiteralPath $plugin.FullName -Destination package -Recurse -Force
+          Compress-Archive -Path "package/JuiceRepeater.vst3" `
+            -DestinationPath "JuiceRepeater-Windows-x64-VST3.zip" -Force
 
-          Copy-Item -LiteralPath $vst3.FullName -Destination "artifacts" -Recurse -Force
-          Compress-Archive -Path "artifacts/Juice Vocal Restorer.vst3" -DestinationPath "dist/Juice-Vocal-Restorer-Windows-VST3.zip" -Force
-
-      - name: Upload Windows VST3 artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Juice-Vocal-Restorer-Windows-VST3
-          path: dist/Juice-Vocal-Restorer-Windows-VST3.zip
+          name: JuiceRepeater-Windows-x64-VST3
+          path: JuiceRepeater-Windows-x64-VST3.zip
           if-no-files-found: error
-          retention-days: 14
 
-  build-macos-vst3:
-    name: Build macOS Universal VST3
-    runs-on: macos-latest
+  macos-vst3:
+    name: macOS Universal VST3
+    runs-on: macos-14
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show build tools
+      - name: Configure universal binary
         shell: bash
-        run: |
-          cmake --version
-          xcodebuild -version
+        run: >
+          cmake -S . -B build -G Xcode
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"
 
-      - name: Configure CMake
+      - name: Build
         shell: bash
-        run: |
-          cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"
+        run: cmake --build build --config Release --target JuiceRepeater_VST3 --parallel
 
-      - name: Build VST3
+      - name: Package and verify architectures
         shell: bash
-        run: |
-          cmake --build build --config Release --target JuiceEQ_VST3 --parallel
-
-      - name: Package macOS VST3
-        shell: bash
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           set -euo pipefail
 
-          vst3="$(find build -type d -name 'Juice Vocal Restorer.vst3' -print -quit)"
-
-          if [[ -z "${vst3}" ]]; then
-            echo "Build folder contents:"
-            find build -maxdepth 6 -print
-            echo "Juice Vocal Restorer.vst3 was not found."
+          plugin="$(find build -type d -name 'JuiceRepeater.vst3' -print | sed -n '1p')"
+          if [[ -z "${plugin}" ]]; then
+            echo "JuiceRepeater.vst3 was not found."
             exit 1
           fi
 
-          mkdir -p artifacts dist
-          cp -R "${vst3}" artifacts/
+          binary="${plugin}/Contents/MacOS/JuiceRepeater"
+          lipo -info "${binary}"
+          lipo -verify_arch arm64 x86_64 "${binary}"
 
-          signing_ready="false"
+          mkdir -p package
+          cp -R "${plugin}" package/
+          codesign --force --deep --sign - "package/JuiceRepeater.vst3"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "package/JuiceRepeater.vst3" "JuiceRepeater-macOS-Universal-VST3.zip"
 
-          if [[ -n "${APPLE_CERTIFICATE_BASE64:-}" && -n "${APPLE_CERTIFICATE_PASSWORD:-}" ]]; then
-            signing_ready="true"
-          fi
-
-          if [[ "${signing_ready}" == "true" ]]; then
-            echo "Developer ID certificate found. Importing certificate and signing Juice Vocal Restorer.vst3."
-
-            keychain_password="$(uuidgen)"
-            keychain_path="${RUNNER_TEMP}/juiceeq-signing.keychain-db"
-            certificate_path="${RUNNER_TEMP}/developer-id-application.p12"
-
-            echo "${APPLE_CERTIFICATE_BASE64}" | base64 -D > "${certificate_path}"
-
-            security create-keychain -p "${keychain_password}" "${keychain_path}"
-            security set-keychain-settings -lut 21600 "${keychain_path}"
-            security unlock-keychain -p "${keychain_password}" "${keychain_path}"
-            security import "${certificate_path}" -k "${keychain_path}" -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
-            security list-keychains -d user -s "${keychain_path}" login.keychain-db
-            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${keychain_password}" "${keychain_path}"
-
-            signing_identity="${APPLE_CODESIGN_IDENTITY:-}"
-
-            if [[ -z "${signing_identity}" ]]; then
-              signing_identity="$(security find-identity -v -p codesigning "${keychain_path}" | awk -F '"' '/Developer ID Application/ { print $2; exit }')"
-            fi
-
-            if [[ -z "${signing_identity}" ]]; then
-              echo "No Developer ID Application signing identity was found in the imported certificate."
-              exit 1
-            fi
-
-            codesign --force --deep --timestamp --options runtime --sign "${signing_identity}" "artifacts/Juice Vocal Restorer.vst3"
-          else
-            echo "Apple Developer ID certificate secrets were not configured."
-            echo "Creating an ad-hoc signed VST3. This can trigger Gatekeeper malware-check/update warnings on macOS."
-            codesign --force --deep --sign - "artifacts/Juice Vocal Restorer.vst3"
-          fi
-
-          codesign --verify --deep --strict "artifacts/Juice Vocal Restorer.vst3"
-
-          notarization_ready="false"
-
-          if [[ "${signing_ready}" == "true" && -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
-            notarization_ready="true"
-          fi
-
-          if [[ "${notarization_ready}" == "true" ]]; then
-            echo "Submitting Juice Vocal Restorer.vst3 to Apple notarization."
-
-            notary_upload_zip="dist/Juice-Vocal-Restorer-macOS-Universal-VST3-notary-upload.zip"
-            ditto -c -k --sequesterRsrc --keepParent "artifacts/Juice Vocal Restorer.vst3" "${notary_upload_zip}"
-
-            xcrun notarytool submit "${notary_upload_zip}" \
-              --apple-id "${APPLE_ID}" \
-              --team-id "${APPLE_TEAM_ID}" \
-              --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
-              --wait
-
-            xcrun stapler staple -v "artifacts/Juice Vocal Restorer.vst3"
-            xcrun stapler validate -v "artifacts/Juice Vocal Restorer.vst3"
-            rm -f "${notary_upload_zip}"
-          else
-            echo "Apple notarization secrets were not configured."
-            echo "Skipping notarization. Public macOS distribution should use a notarized artifact."
-          fi
-
-          ditto -c -k --sequesterRsrc --keepParent "artifacts/Juice Vocal Restorer.vst3" "dist/Juice-Vocal-Restorer-macOS-Universal-VST3.zip"
-
-      - name: Upload macOS VST3 artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Juice-Vocal-Restorer-macOS-Universal-VST3
-          path: dist/Juice-Vocal-Restorer-macOS-Universal-VST3.zip
+          name: JuiceRepeater-macOS-Universal-VST3
+          path: JuiceRepeater-macOS-Universal-VST3.zip
           if-no-files-found: error
-          retention-days: 14
-
-  publish-release:
-    name: Publish GitHub Release
-    runs-on: ubuntu-latest
-    needs:
-      - build-windows-vst3
-      - build-macos-vst3
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release == true)
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Show release files
-        shell: bash
-        run: |
-          find dist -maxdepth 2 -type f -print
-
-      - name: Create or update GitHub Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          WORKFLOW_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          set -euo pipefail
-
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            tag="${GITHUB_REF_NAME}"
-          else
-            tag="${WORKFLOW_RELEASE_TAG}"
-          fi
-
-          if gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
-            gh release upload "${tag}" dist/*.zip --repo "${GH_REPO}" --clobber
-          else
-            gh release create "${tag}" dist/*.zip \
-              --repo "${GH_REPO}" \
-              --target "${GITHUB_SHA}" \
-              --title "Juice Vocal Restorer ${tag}" \
-              --notes "Windows VST3 and macOS Universal VST3 builds for Juice Vocal Restorer."
-          fi

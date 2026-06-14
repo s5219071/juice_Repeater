@@ -2,15 +2,14 @@
 
 #include <JuceHeader.h>
 
-#include <array>
 #include <atomic>
-#include <memory>
+#include <cstdint>
 
-class JuiceEQAudioProcessor final : public juce::AudioProcessor
+class JuiceRepeaterAudioProcessor final : public juce::AudioProcessor
 {
 public:
-    JuiceEQAudioProcessor();
-    ~JuiceEQAudioProcessor() override;
+    JuiceRepeaterAudioProcessor();
+    ~JuiceRepeaterAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -37,110 +36,87 @@ public:
 
     struct ParameterIDs
     {
-        static constexpr auto clean = "clean";
-        static constexpr auto brightness = "brightness";
-        static constexpr auto oversampling = "oversampling";
+        static constexpr auto length = "length";
+        static constexpr auto soft = "soft";
     };
 
     juce::AudioProcessorValueTreeState apvts;
 
-    static constexpr int dynamicBandCount = 3;
-    static constexpr int analyzerFifoSize = 32768;
-
-    int pullAnalyzerSamples (float* destination, int maximumSamples) noexcept;
-    float getMagnitudeResponseDb (float frequencyHz) const noexcept;
-    float getDynamicReductionDb (int band) const noexcept;
-    double getCurrentSampleRate() const noexcept { return sampleRateHz.load(); }
-
 private:
-    using Filter = juce::dsp::IIR::Filter<float>;
-    using Coefficients = juce::dsp::IIR::Coefficients<float>;
-    using ArrayCoefficients = juce::dsp::IIR::ArrayCoefficients<float>;
-
-    struct DynamicBand
+    enum class LoopState
     {
-        Filter detector;
-        float envelope = 0.0f;
-        float reductionDb = 0.0f;
-        float frequency = 1000.0f;
-        float q = 1.0f;
-        float thresholdDb = -30.0f;
-        float ratio = 3.0f;
-        float maximumDepthDb = 4.0f;
-
-        DynamicBand();
-        void prepare (double processingRate);
-        void reset() noexcept;
-        float process (float input, float cleanScale) noexcept;
-
-    private:
-        float attackCoefficient = 0.0f;
-        float releaseCoefficient = 0.0f;
-        float gainAttackCoefficient = 0.0f;
-        float gainReleaseCoefficient = 0.0f;
+        waitingForGrid,
+        capturing,
+        repeating
     };
 
-    struct ChannelDsp
+    struct HostPosition
     {
-        Filter lowCut;
-        Filter bell450;
-        Filter bell2k;
-        Filter bell8k;
-        Filter shelf20k;
-        Filter tubeHighPass;
-        Filter tubeWetHighPass;
-        Filter brightnessShelf;
-        std::array<DynamicBand, dynamicBandCount> dynamicBands;
-        double lastProcessingRate = 0.0;
-        float lastCleanScale = -1.0f;
-        float lastBrightnessAmount = -1.0f;
-
-        ChannelDsp();
-        void prepare (double processingRate);
-        void updateCoefficients (double processingRate, float cleanScale, float brightnessAmount);
-        void reset() noexcept;
-        float process (float input, float cleanScale, float brightnessAmount) noexcept;
+        bool valid = false;
+        bool playing = false;
+        bool hasTimeInSamples = false;
+        double bpm = 120.0;
+        double ppq = 0.0;
+        std::int64_t timeInSamples = 0;
     };
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    static double getQuarterNotesForChoice (int choice) noexcept;
+    static double getBoundaryAtOrAfter (double ppq, double gridLength) noexcept;
+    static float smoothstep (float x) noexcept;
 
-    void rebuildOversamplers (int channels, int maximumBlockSize);
-    void updateOversamplingChoice (int choice);
-    void updateFilterCoefficients (double processingRate, float cleanScale, float brightnessAmount);
-    void processDspBlock (juce::dsp::AudioBlock<float> block,
-                          double processingRate,
-                          float cleanScale,
-                          float brightnessAmount) noexcept;
-    void pushAnalyzerSamples (const juce::AudioBuffer<float>& buffer) noexcept;
-    void updateDynamicMeters() noexcept;
-    void resetDspState() noexcept;
-
-    static float getParameter (const std::atomic<float>* parameter, float fallback) noexcept;
-    static float magnitudeForHighPass (float frequency, double sampleRate, float cutoff, float q) noexcept;
-    static float magnitudeForPeak (float frequency, double sampleRate, float cutoff, float q, float gainDb) noexcept;
-    static float magnitudeForHighShelf (float frequency, double sampleRate, float cutoff, float q, float gainDb) noexcept;
+    HostPosition getHostPosition() const noexcept;
+    bool hostTimelineDiscontinuity (const HostPosition& position,
+                                    int blockSize,
+                                    double ppqPerSample) const noexcept;
+    void resetLoopState (double blockPpq, double gridLength) noexcept;
+    void beginCapture (double followingBoundaryPpq) noexcept;
+    void finishCapture (double followingBoundaryPpq, bool softEnabled) noexcept;
+    void captureSample (const juce::AudioBuffer<float>& buffer,
+                        int sampleIndex,
+                        int channelCount) noexcept;
+    float getLoopSample (int channel, int logicalIndex) const noexcept;
+    float renderLoopSample (int channel,
+                            float drySample,
+                            double samplePpq,
+                            double ppqPerSample,
+                            bool softEnabled) const noexcept;
+    void advancePlayback() noexcept;
+    void updateHostHistory (const HostPosition& position, int blockSize) noexcept;
+    void clearHostHistory() noexcept;
 
     static constexpr int maximumChannels = 2;
+    static constexpr double maximumLoopSeconds = 32.0;
+    static constexpr double softCrossfadeSeconds = 0.005;
 
-    std::array<ChannelDsp, maximumChannels> channels;
-    std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 3> oversamplers;
+    juce::AudioBuffer<float> loopBuffer;
 
-    std::atomic<float>* cleanParameter = nullptr;
-    std::atomic<float>* brightnessParameter = nullptr;
-    std::atomic<float>* oversamplingParameter = nullptr;
+    std::atomic<float>* lengthParameter = nullptr;
+    std::atomic<float>* softParameter = nullptr;
 
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> cleanSmoother;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> brightnessSmoother;
+    double currentSampleRate = 44100.0;
+    double nextBoundaryPpq = 0.0;
+    double activeGridLength = 1.0;
+    double previousBlockPpq = 0.0;
+    double previousBpm = 120.0;
 
-    std::atomic<double> sampleRateHz { 44100.0 };
-    int preparedChannels = 2;
-    int preparedBlockSize = 512;
-    int activeOversamplingChoice = -1;
+    std::int64_t previousTimeInSamples = 0;
+    int previousBlockSize = 0;
+    int maximumLoopSamples = 1;
+    int captureWritePosition = 0;
+    int capturedSampleCount = 0;
+    int loopStartPosition = 0;
+    int loopLengthSamples = 0;
+    int playbackPosition = 0;
+    int activationFadePosition = 0;
+    int crossfadeSamples = 1;
+    int activeLengthChoice = -1;
 
-    std::array<std::atomic<float>, dynamicBandCount> dynamicReductionMeters {};
+    bool previousPositionWasValid = false;
+    bool previousPositionWasPlaying = false;
+    bool previousPositionHadTimeInSamples = false;
+    bool captureHasWrapped = false;
+    LoopState loopState = LoopState::waitingForGrid;
 
-    std::array<float, analyzerFifoSize> analyzerStorage {};
-    juce::AbstractFifo analyzerFifo { analyzerFifoSize };
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JuiceEQAudioProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JuiceRepeaterAudioProcessor)
 };

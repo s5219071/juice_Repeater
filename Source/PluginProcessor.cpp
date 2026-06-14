@@ -1,616 +1,412 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-#include <algorithm>
 #include <cmath>
-#include <complex>
-#include <cstring>
+#include <cstdlib>
 #include <vector>
 
 namespace
 {
-    constexpr float lowCutFrequency = 110.0f;
-    constexpr float tubeFrequency = 18000.0f;
-
-    constexpr std::array<float, JuiceEQAudioProcessor::dynamicBandCount> dynamicFrequencies {
-        200.0f, 3600.0f, 10000.0f
-    };
-
-    float clampFrequency (float frequency, double sampleRate) noexcept
-    {
-        return juce::jlimit (10.0f, static_cast<float> (sampleRate * 0.45), frequency);
-    }
-
-    float coefficientFromMilliseconds (double sampleRate, float milliseconds) noexcept
-    {
-        return std::exp (-1.0f / static_cast<float> (sampleRate * milliseconds * 0.001));
-    }
-
-    struct Biquad
-    {
-        double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
-    };
-
-    float biquadMagnitude (const Biquad& c, float frequency, double sampleRate) noexcept
-    {
-        const double w = juce::MathConstants<double>::twoPi
-                         * static_cast<double> (frequency) / sampleRate;
-        const std::complex<double> z1 = std::polar (1.0, -w);
-        const std::complex<double> z2 = z1 * z1;
-        const auto numerator = c.b0 + c.b1 * z1 + c.b2 * z2;
-        const auto denominator = 1.0 + c.a1 * z1 + c.a2 * z2;
-        return static_cast<float> (std::abs (numerator / denominator));
-    }
-
-    Biquad makeHighPassDisplay (double sampleRate, float cutoff, float q) noexcept
-    {
-        const double w = juce::MathConstants<double>::twoPi * cutoff / sampleRate;
-        const double cosine = std::cos (w);
-        const double alpha = std::sin (w) / (2.0 * q);
-        const double a0 = 1.0 + alpha;
-
-        return {
-            ((1.0 + cosine) * 0.5) / a0,
-            (-(1.0 + cosine)) / a0,
-            ((1.0 + cosine) * 0.5) / a0,
-            (-2.0 * cosine) / a0,
-            (1.0 - alpha) / a0
-        };
-    }
-
-    Biquad makePeakDisplay (double sampleRate, float cutoff, float q, float gainDb) noexcept
-    {
-        const double a = std::pow (10.0, gainDb / 40.0);
-        const double w = juce::MathConstants<double>::twoPi * cutoff / sampleRate;
-        const double cosine = std::cos (w);
-        const double alpha = std::sin (w) / (2.0 * q);
-        const double a0 = 1.0 + alpha / a;
-
-        return {
-            (1.0 + alpha * a) / a0,
-            (-2.0 * cosine) / a0,
-            (1.0 - alpha * a) / a0,
-            (-2.0 * cosine) / a0,
-            (1.0 - alpha / a) / a0
-        };
-    }
-
-    Biquad makeHighShelfDisplay (double sampleRate, float cutoff, float q, float gainDb) noexcept
-    {
-        const double a = std::pow (10.0, gainDb / 40.0);
-        const double w = juce::MathConstants<double>::twoPi * cutoff / sampleRate;
-        const double cosine = std::cos (w);
-        const double alpha = std::sin (w) / (2.0 * q);
-        const double beta = 2.0 * std::sqrt (a) * alpha;
-        const double a0 = (a + 1.0) - (a - 1.0) * cosine + beta;
-
-        return {
-            a * ((a + 1.0) + (a - 1.0) * cosine + beta) / a0,
-            -2.0 * a * ((a - 1.0) + (a + 1.0) * cosine) / a0,
-            a * ((a + 1.0) + (a - 1.0) * cosine - beta) / a0,
-            2.0 * ((a - 1.0) - (a + 1.0) * cosine) / a0,
-            ((a + 1.0) - (a - 1.0) * cosine - beta) / a0
-        };
-    }
+    constexpr double boundaryEpsilon = 1.0e-9;
 }
 
-juce::AudioProcessorValueTreeState::ParameterLayout JuiceEQAudioProcessor::createParameterLayout()
+juce::AudioProcessorValueTreeState::ParameterLayout
+JuiceRepeaterAudioProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> parameters;
 
-    parameters.push_back (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { ParameterIDs::clean, 1 },
-        "Clean",
-        juce::NormalisableRange<float> (0.0f, 200.0f, 0.1f),
-        100.0f,
-        juce::AudioParameterFloatAttributes().withLabel ("%")));
-
-    parameters.push_back (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { ParameterIDs::brightness, 1 },
-        "Brightness",
-        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f),
-        25.0f,
-        juce::AudioParameterFloatAttributes().withLabel ("%")));
-
     parameters.push_back (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { ParameterIDs::oversampling, 1 },
-        "Oversampling",
-        juce::StringArray { "1x", "2x", "4x", "8x" },
+        juce::ParameterID { ParameterIDs::length, 1 },
+        "Length",
+        juce::StringArray { "1/1", "1/2", "1/4", "1/8", "1/16" },
         2));
+
+    parameters.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { ParameterIDs::soft, 1 },
+        "Soft",
+        true));
 
     return { parameters.begin(), parameters.end() };
 }
 
-JuiceEQAudioProcessor::JuiceEQAudioProcessor()
+JuiceRepeaterAudioProcessor::JuiceRepeaterAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
 {
-    cleanParameter = apvts.getRawParameterValue (ParameterIDs::clean);
-    brightnessParameter = apvts.getRawParameterValue (ParameterIDs::brightness);
-    oversamplingParameter = apvts.getRawParameterValue (ParameterIDs::oversampling);
-
-    for (auto& meter : dynamicReductionMeters)
-        meter.store (0.0f);
+    lengthParameter = apvts.getRawParameterValue (ParameterIDs::length);
+    softParameter = apvts.getRawParameterValue (ParameterIDs::soft);
 }
 
-JuiceEQAudioProcessor::~JuiceEQAudioProcessor() = default;
+JuiceRepeaterAudioProcessor::~JuiceRepeaterAudioProcessor() = default;
 
-void JuiceEQAudioProcessor::prepareToPlay (double newSampleRate, int samplesPerBlock)
+void JuiceRepeaterAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    newSampleRate = juce::jmax (1.0, newSampleRate);
-    sampleRateHz.store (newSampleRate);
-    preparedChannels = juce::jlimit (1, maximumChannels, getTotalNumOutputChannels());
-    preparedBlockSize = juce::jmax (1, samplesPerBlock);
+    juce::ignoreUnused (samplesPerBlock);
 
-    rebuildOversamplers (preparedChannels, preparedBlockSize);
+    currentSampleRate = juce::jmax (1.0, sampleRate);
+    maximumLoopSamples = juce::jmax (
+        1, static_cast<int> (std::ceil (currentSampleRate * maximumLoopSeconds)));
+    crossfadeSamples = juce::jmax (
+        1, static_cast<int> (std::round (currentSampleRate * softCrossfadeSeconds)));
 
-    cleanSmoother.reset (newSampleRate, 0.04);
-    brightnessSmoother.reset (newSampleRate, 0.04);
-    cleanSmoother.setCurrentAndTargetValue (getParameter (cleanParameter, 100.0f) * 0.01f);
-    brightnessSmoother.setCurrentAndTargetValue (getParameter (brightnessParameter, 25.0f) * 0.01f);
+    loopBuffer.setSize (maximumChannels, maximumLoopSamples, false, true, false);
+    loopBuffer.clear();
 
-    activeOversamplingChoice = -1;
-    updateOversamplingChoice (static_cast<int> (getParameter (oversamplingParameter, 2.0f)));
-    analyzerFifo.reset();
+    activeLengthChoice = -1;
+    resetLoopState (0.0, 1.0);
+    clearHostHistory();
 }
 
-void JuiceEQAudioProcessor::releaseResources()
+void JuiceRepeaterAudioProcessor::releaseResources()
 {
-    resetDspState();
+    loopBuffer.setSize (0, 0);
+    resetLoopState (0.0, 1.0);
+    clearHostHistory();
 }
 
-bool JuiceEQAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+bool JuiceRepeaterAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto input = layouts.getMainInputChannelSet();
     const auto output = layouts.getMainOutputChannelSet();
+
     return input == output
-           && (output == juce::AudioChannelSet::mono() || output == juce::AudioChannelSet::stereo());
+           && (output == juce::AudioChannelSet::mono()
+               || output == juce::AudioChannelSet::stereo());
 }
 
-void JuiceEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+void JuiceRepeaterAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
+                                                juce::MidiBuffer& midi)
 {
     juce::ignoreUnused (midi);
     juce::ScopedNoDenormals noDenormals;
 
     const int inputChannels = getTotalNumInputChannels();
     const int outputChannels = getTotalNumOutputChannels();
+    const int processChannels = juce::jmin (
+        maximumChannels,
+        juce::jmin (inputChannels, juce::jmin (outputChannels, buffer.getNumChannels())));
+    const int sampleCount = buffer.getNumSamples();
 
     for (int channel = inputChannels; channel < outputChannels; ++channel)
-        buffer.clear (channel, 0, buffer.getNumSamples());
+        buffer.clear (channel, 0, sampleCount);
 
-    if (buffer.getNumSamples() == 0 || outputChannels == 0)
+    if (sampleCount == 0 || processChannels == 0)
         return;
 
-    const int requestedChoice = juce::jlimit (
-        0, 3, static_cast<int> (getParameter (oversamplingParameter, 2.0f)));
-    updateOversamplingChoice (requestedChoice);
+    const auto host = getHostPosition();
+    const int requestedLengthChoice = juce::jlimit (
+        0, 4, static_cast<int> (std::round (lengthParameter->load())));
+    const bool softEnabled = softParameter->load() >= 0.5f;
+    const double requestedGridLength = getQuarterNotesForChoice (requestedLengthChoice);
 
-    cleanSmoother.setTargetValue (getParameter (cleanParameter, 100.0f) * 0.01f);
-    brightnessSmoother.setTargetValue (getParameter (brightnessParameter, 25.0f) * 0.01f);
-
-    const float cleanScale = cleanSmoother.skip (buffer.getNumSamples());
-    const float brightnessAmount = brightnessSmoother.skip (buffer.getNumSamples());
-    const double processingRate = sampleRateHz.load() * static_cast<double> (1 << activeOversamplingChoice);
-
-    juce::dsp::AudioBlock<float> block (buffer);
-
-    if (activeOversamplingChoice == 0)
+    if (! host.valid || ! host.playing)
     {
-        processDspBlock (block, processingRate, cleanScale, brightnessAmount);
-    }
-    else
-    {
-        auto& oversampler = *oversamplers[static_cast<size_t> (activeOversamplingChoice - 1)];
-        auto oversampledBlock = oversampler.processSamplesUp (block);
-        processDspBlock (oversampledBlock, processingRate, cleanScale, brightnessAmount);
-        oversampler.processSamplesDown (block);
+        activeLengthChoice = requestedLengthChoice;
+        resetLoopState (host.ppq, requestedGridLength);
+        clearHostHistory();
+        return;
     }
 
-    updateDynamicMeters();
-    pushAnalyzerSamples (buffer);
+    const double ppqPerSample = host.bpm / (60.0 * currentSampleRate);
+    const bool lengthChanged = requestedLengthChoice != activeLengthChoice;
+    const bool timelineMoved = hostTimelineDiscontinuity (host, sampleCount, ppqPerSample);
+
+    if (lengthChanged || timelineMoved)
+    {
+        activeLengthChoice = requestedLengthChoice;
+        resetLoopState (host.ppq, requestedGridLength);
+    }
+
+    for (int sample = 0; sample < sampleCount; ++sample)
+    {
+        const double samplePpq = host.ppq + static_cast<double> (sample) * ppqPerSample;
+
+        while (samplePpq + boundaryEpsilon >= nextBoundaryPpq)
+        {
+            const double followingBoundary = nextBoundaryPpq + activeGridLength;
+
+            if (loopState == LoopState::waitingForGrid)
+                beginCapture (followingBoundary);
+            else if (loopState == LoopState::capturing)
+                finishCapture (followingBoundary, softEnabled);
+            else
+            {
+                const int fadeLength = juce::jmin (
+                    crossfadeSamples, juce::jmax (1, loopLengthSamples / 2));
+                playbackPosition = softEnabled ? juce::jmin (fadeLength, loopLengthSamples - 1) : 0;
+                nextBoundaryPpq = followingBoundary;
+            }
+        }
+
+        if (loopState == LoopState::capturing)
+        {
+            captureSample (buffer, sample, processChannels);
+            continue;
+        }
+
+        if (loopState != LoopState::repeating || loopLengthSamples <= 0)
+            continue;
+
+        for (int channel = 0; channel < processChannels; ++channel)
+        {
+            const float dry = buffer.getSample (channel, sample);
+            buffer.setSample (
+                channel,
+                sample,
+                renderLoopSample (channel, dry, samplePpq, ppqPerSample, softEnabled));
+        }
+
+        advancePlayback();
+    }
+
+    updateHostHistory (host, sampleCount);
 }
 
-void JuiceEQAudioProcessor::getStateInformation (juce::MemoryBlock& destination)
+void JuiceRepeaterAudioProcessor::getStateInformation (juce::MemoryBlock& destination)
 {
     if (auto xml = apvts.copyState().createXml())
         copyXmlToBinary (*xml, destination);
 }
 
-void JuiceEQAudioProcessor::setStateInformation (const void* data, int size)
+void JuiceRepeaterAudioProcessor::setStateInformation (const void* data, int size)
 {
     if (auto xml = getXmlFromBinary (data, size))
         if (xml->hasTagName (apvts.state.getType()))
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
 }
 
-void JuiceEQAudioProcessor::rebuildOversamplers (int channelCount, int maximumBlockSize)
+double JuiceRepeaterAudioProcessor::getQuarterNotesForChoice (int choice) noexcept
 {
-    for (int stage = 1; stage <= 3; ++stage)
-    {
-        auto oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
-            static_cast<size_t> (channelCount),
-            static_cast<size_t> (stage),
-            juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
-            true,
-            true);
-        oversampler->initProcessing (static_cast<size_t> (maximumBlockSize));
-        oversampler->reset();
-        oversamplers[static_cast<size_t> (stage - 1)] = std::move (oversampler);
-    }
+    constexpr double lengths[] { 4.0, 2.0, 1.0, 0.5, 0.25 };
+    return lengths[juce::jlimit (0, 4, choice)];
 }
 
-void JuiceEQAudioProcessor::updateOversamplingChoice (int choice)
+double JuiceRepeaterAudioProcessor::getBoundaryAtOrAfter (double ppq,
+                                                           double gridLength) noexcept
 {
-    choice = juce::jlimit (0, 3, choice);
+    if (! std::isfinite (ppq) || ! std::isfinite (gridLength) || gridLength <= 0.0)
+        return 0.0;
 
-    if (choice == activeOversamplingChoice)
+    return std::ceil ((ppq - boundaryEpsilon) / gridLength) * gridLength;
+}
+
+float JuiceRepeaterAudioProcessor::smoothstep (float x) noexcept
+{
+    x = juce::jlimit (0.0f, 1.0f, x);
+    return x * x * (3.0f - 2.0f * x);
+}
+
+JuiceRepeaterAudioProcessor::HostPosition JuiceRepeaterAudioProcessor::getHostPosition() const noexcept
+{
+    HostPosition result;
+
+    if (auto* playHead = getPlayHead())
+    {
+        if (const auto position = playHead->getPosition())
+        {
+            const auto bpm = position->getBpm();
+            const auto ppq = position->getPpqPosition();
+
+            if (bpm && ppq
+                && std::isfinite (*bpm) && std::isfinite (*ppq) && *bpm > 0.0)
+            {
+                result.valid = true;
+                result.playing = position->getIsPlaying();
+                result.bpm = *bpm;
+                result.ppq = *ppq;
+            }
+
+            if (const auto time = position->getTimeInSamples())
+            {
+                result.hasTimeInSamples = true;
+                result.timeInSamples = *time;
+            }
+        }
+    }
+
+    return result;
+}
+
+bool JuiceRepeaterAudioProcessor::hostTimelineDiscontinuity (
+    const HostPosition& position,
+    int blockSize,
+    double ppqPerSample) const noexcept
+{
+    juce::ignoreUnused (blockSize);
+
+    if (! previousPositionWasValid || ! previousPositionWasPlaying)
+        return true;
+
+    if (std::abs (position.bpm - previousBpm) > 1.0e-4)
+        return true;
+
+    if (position.hasTimeInSamples && previousPositionHadTimeInSamples)
+    {
+        const auto expected = previousTimeInSamples + previousBlockSize;
+        if (std::llabs (position.timeInSamples - expected) > 1)
+            return true;
+    }
+
+    const double expectedPpq = previousBlockPpq
+                               + static_cast<double> (previousBlockSize)
+                                     * previousBpm / (60.0 * currentSampleRate);
+    const double tolerance = juce::jmax (1.0e-7, std::abs (ppqPerSample) * 2.0);
+    return std::abs (position.ppq - expectedPpq) > tolerance;
+}
+
+void JuiceRepeaterAudioProcessor::resetLoopState (double blockPpq,
+                                                   double gridLength) noexcept
+{
+    activeGridLength = juce::jmax (0.25, gridLength);
+    nextBoundaryPpq = getBoundaryAtOrAfter (blockPpq, activeGridLength);
+    captureWritePosition = 0;
+    capturedSampleCount = 0;
+    captureHasWrapped = false;
+    loopStartPosition = 0;
+    loopLengthSamples = 0;
+    playbackPosition = 0;
+    activationFadePosition = crossfadeSamples;
+    loopState = LoopState::waitingForGrid;
+}
+
+void JuiceRepeaterAudioProcessor::beginCapture (double followingBoundaryPpq) noexcept
+{
+    captureWritePosition = 0;
+    capturedSampleCount = 0;
+    captureHasWrapped = false;
+    loopStartPosition = 0;
+    loopLengthSamples = 0;
+    playbackPosition = 0;
+    nextBoundaryPpq = followingBoundaryPpq;
+    loopState = LoopState::capturing;
+}
+
+void JuiceRepeaterAudioProcessor::finishCapture (double followingBoundaryPpq,
+                                                  bool softEnabled) noexcept
+{
+    loopLengthSamples = capturedSampleCount;
+    loopStartPosition = captureHasWrapped ? captureWritePosition : 0;
+    playbackPosition = 0;
+    activationFadePosition = softEnabled ? 0 : crossfadeSamples;
+    nextBoundaryPpq = followingBoundaryPpq;
+    loopState = loopLengthSamples > 0 ? LoopState::repeating : LoopState::waitingForGrid;
+}
+
+void JuiceRepeaterAudioProcessor::captureSample (const juce::AudioBuffer<float>& buffer,
+                                                  int sampleIndex,
+                                                  int channelCount) noexcept
+{
+    if (maximumLoopSamples <= 0)
         return;
-
-    activeOversamplingChoice = choice;
-    resetDspState();
-
-    if (choice == 0)
-    {
-        setLatencySamples (0);
-    }
-    else
-    {
-        auto& oversampler = *oversamplers[static_cast<size_t> (choice - 1)];
-        oversampler.reset();
-        setLatencySamples (static_cast<int> (std::round (oversampler.getLatencyInSamples())));
-    }
-
-    const double processingRate = sampleRateHz.load() * static_cast<double> (1 << choice);
-
-    for (auto& channel : channels)
-        channel.prepare (processingRate);
-
-    updateFilterCoefficients (processingRate,
-                              getParameter (cleanParameter, 100.0f) * 0.01f,
-                              getParameter (brightnessParameter, 25.0f) * 0.01f);
-}
-
-void JuiceEQAudioProcessor::updateFilterCoefficients (double processingRate,
-                                                       float cleanScale,
-                                                       float brightnessAmount)
-{
-    for (auto& channel : channels)
-        channel.updateCoefficients (processingRate, cleanScale, brightnessAmount);
-}
-
-void JuiceEQAudioProcessor::processDspBlock (juce::dsp::AudioBlock<float> block,
-                                             double processingRate,
-                                             float cleanScale,
-                                             float brightnessAmount) noexcept
-{
-    updateFilterCoefficients (processingRate, cleanScale, brightnessAmount);
-
-    const int channelCount = juce::jmin (maximumChannels, static_cast<int> (block.getNumChannels()));
-    const int sampleCount = static_cast<int> (block.getNumSamples());
 
     for (int channel = 0; channel < channelCount; ++channel)
-    {
-        auto* samples = block.getChannelPointer (static_cast<size_t> (channel));
-        auto& dsp = channels[static_cast<size_t> (channel)];
+        loopBuffer.setSample (channel, captureWritePosition, buffer.getSample (channel, sampleIndex));
 
-        for (int sample = 0; sample < sampleCount; ++sample)
-            samples[sample] = dsp.process (samples[sample], cleanScale, brightnessAmount);
-    }
+    captureWritePosition = (captureWritePosition + 1) % maximumLoopSamples;
+
+    if (capturedSampleCount < maximumLoopSamples)
+        ++capturedSampleCount;
+    else
+        captureHasWrapped = true;
 }
 
-void JuiceEQAudioProcessor::pushAnalyzerSamples (const juce::AudioBuffer<float>& buffer) noexcept
+float JuiceRepeaterAudioProcessor::getLoopSample (int channel, int logicalIndex) const noexcept
 {
-    if (buffer.getNumChannels() == 0)
-        return;
-
-    const int requested = juce::jmin (buffer.getNumSamples(), analyzerFifo.getFreeSpace());
-    if (requested <= 0)
-        return;
-
-    int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
-    analyzerFifo.prepareToWrite (requested, start1, size1, start2, size2);
-    const float* source = buffer.getReadPointer (0);
-
-    if (size1 > 0)
-        std::memcpy (analyzerStorage.data() + start1, source, static_cast<size_t> (size1) * sizeof (float));
-    if (size2 > 0)
-        std::memcpy (analyzerStorage.data() + start2, source + size1, static_cast<size_t> (size2) * sizeof (float));
-
-    analyzerFifo.finishedWrite (size1 + size2);
-}
-
-int JuiceEQAudioProcessor::pullAnalyzerSamples (float* destination, int maximumSamples) noexcept
-{
-    if (destination == nullptr || maximumSamples <= 0)
-        return 0;
-
-    const int requested = juce::jmin (maximumSamples, analyzerFifo.getNumReady());
-    int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
-    analyzerFifo.prepareToRead (requested, start1, size1, start2, size2);
-
-    if (size1 > 0)
-        std::memcpy (destination, analyzerStorage.data() + start1, static_cast<size_t> (size1) * sizeof (float));
-    if (size2 > 0)
-        std::memcpy (destination + size1, analyzerStorage.data() + start2, static_cast<size_t> (size2) * sizeof (float));
-
-    analyzerFifo.finishedRead (size1 + size2);
-    return size1 + size2;
-}
-
-void JuiceEQAudioProcessor::updateDynamicMeters() noexcept
-{
-    for (int band = 0; band < dynamicBandCount; ++band)
-    {
-        float maximum = 0.0f;
-        for (int channel = 0; channel < preparedChannels; ++channel)
-            maximum = juce::jmax (maximum, channels[static_cast<size_t> (channel)]
-                                               .dynamicBands[static_cast<size_t> (band)]
-                                               .reductionDb);
-
-        const float previous = dynamicReductionMeters[static_cast<size_t> (band)].load();
-        dynamicReductionMeters[static_cast<size_t> (band)].store (
-            maximum > previous ? maximum : previous * 0.90f + maximum * 0.10f);
-    }
-}
-
-void JuiceEQAudioProcessor::resetDspState() noexcept
-{
-    for (auto& channel : channels)
-        channel.reset();
-
-    for (auto& oversampler : oversamplers)
-        if (oversampler != nullptr)
-            oversampler->reset();
-
-    for (auto& meter : dynamicReductionMeters)
-        meter.store (0.0f);
-}
-
-float JuiceEQAudioProcessor::getMagnitudeResponseDb (float frequencyHz) const noexcept
-{
-    const double rate = sampleRateHz.load();
-    const float clean = getParameter (cleanParameter, 100.0f) * 0.01f;
-    const float brightness = getParameter (brightnessParameter, 25.0f) * 0.01f;
-    const float frequency = juce::jlimit (20.0f, static_cast<float> (rate * 0.49), frequencyHz);
-
-    float magnitude = magnitudeForHighPass (frequency, rate, lowCutFrequency, 0.7071f);
-    magnitude *= magnitudeForPeak (frequency, rate, 450.0f, 0.90f, 1.0f * clean);
-    magnitude *= magnitudeForPeak (frequency, rate, 2000.0f, 1.00f, 2.5f * clean);
-    magnitude *= magnitudeForPeak (frequency, rate, 8000.0f, 0.82f, 3.0f * clean);
-    magnitude *= magnitudeForHighShelf (frequency, rate, clampFrequency (20000.0f, rate), 1.15f, 10.0f * clean);
-    magnitude *= magnitudeForHighShelf (frequency, rate, clampFrequency (18000.0f, rate), 0.66f, 10.0f * brightness);
-
-    float responseDb = juce::Decibels::gainToDecibels (magnitude, -60.0f);
-    constexpr std::array<float, dynamicBandCount> widthsInOctaves { 0.82f, 0.52f, 0.42f };
-
-    for (int band = 0; band < dynamicBandCount; ++band)
-    {
-        const float octaves = std::log2 (frequency / dynamicFrequencies[static_cast<size_t> (band)]);
-        const float width = widthsInOctaves[static_cast<size_t> (band)];
-        const float shape = std::exp (-0.5f * (octaves * octaves) / (width * width));
-        responseDb -= getDynamicReductionDb (band) * shape;
-    }
-
-    return juce::jlimit (-60.0f, 30.0f, responseDb);
-}
-
-float JuiceEQAudioProcessor::getDynamicReductionDb (int band) const noexcept
-{
-    if (band < 0 || band >= dynamicBandCount)
+    if (loopLengthSamples <= 0 || maximumLoopSamples <= 0)
         return 0.0f;
-    return dynamicReductionMeters[static_cast<size_t> (band)].load();
+
+    logicalIndex %= loopLengthSamples;
+    if (logicalIndex < 0)
+        logicalIndex += loopLengthSamples;
+
+    const int physicalIndex = (loopStartPosition + logicalIndex) % maximumLoopSamples;
+    return loopBuffer.getSample (channel, physicalIndex);
 }
 
-float JuiceEQAudioProcessor::getParameter (const std::atomic<float>* parameter, float fallback) noexcept
+float JuiceRepeaterAudioProcessor::renderLoopSample (int channel,
+                                                      float drySample,
+                                                      double samplePpq,
+                                                      double ppqPerSample,
+                                                      bool softEnabled) const noexcept
 {
-    return parameter != nullptr ? parameter->load() : fallback;
-}
+    const float loopSample = getLoopSample (channel, playbackPosition);
 
-float JuiceEQAudioProcessor::magnitudeForHighPass (float frequency,
-                                                   double sampleRate,
-                                                   float cutoff,
-                                                   float q) noexcept
-{
-    return biquadMagnitude (makeHighPassDisplay (sampleRate, clampFrequency (cutoff, sampleRate), q),
-                            frequency,
-                            sampleRate);
-}
+    if (! softEnabled)
+        return loopSample;
 
-float JuiceEQAudioProcessor::magnitudeForPeak (float frequency,
-                                               double sampleRate,
-                                               float cutoff,
-                                               float q,
-                                               float gainDb) noexcept
-{
-    return biquadMagnitude (makePeakDisplay (sampleRate, clampFrequency (cutoff, sampleRate), q, gainDb),
-                            frequency,
-                            sampleRate);
-}
+    float result = loopSample;
+    const int fadeLength = juce::jmin (crossfadeSamples, juce::jmax (1, loopLengthSamples / 2));
 
-float JuiceEQAudioProcessor::magnitudeForHighShelf (float frequency,
-                                                    double sampleRate,
-                                                    float cutoff,
-                                                    float q,
-                                                    float gainDb) noexcept
-{
-    return biquadMagnitude (makeHighShelfDisplay (sampleRate, clampFrequency (cutoff, sampleRate), q, gainDb),
-                            frequency,
-                            sampleRate);
-}
-
-JuiceEQAudioProcessor::DynamicBand::DynamicBand()
-{
-    detector.coefficients = new Coefficients (1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
-}
-
-void JuiceEQAudioProcessor::DynamicBand::prepare (double processingRate)
-{
-    *detector.coefficients = ArrayCoefficients::makeBandPass (
-        processingRate, clampFrequency (frequency, processingRate), q);
-    attackCoefficient = coefficientFromMilliseconds (processingRate, 3.0f);
-    releaseCoefficient = coefficientFromMilliseconds (processingRate, 90.0f);
-    gainAttackCoefficient = coefficientFromMilliseconds (processingRate, 7.0f);
-    gainReleaseCoefficient = coefficientFromMilliseconds (processingRate, 130.0f);
-    reset();
-}
-
-void JuiceEQAudioProcessor::DynamicBand::reset() noexcept
-{
-    detector.reset();
-    envelope = 0.0f;
-    reductionDb = 0.0f;
-}
-
-float JuiceEQAudioProcessor::DynamicBand::process (float input, float cleanScale) noexcept
-{
-    const float bandSignal = detector.processSample (input);
-    const float detectorValue = std::abs (bandSignal);
-    const float envelopeCoefficient = detectorValue > envelope ? attackCoefficient : releaseCoefficient;
-    envelope = detectorValue + envelopeCoefficient * (envelope - detectorValue);
-
-    const float levelDb = juce::Decibels::gainToDecibels (envelope, -100.0f);
-    const float overThresholdDb = juce::jmax (0.0f, levelDb - thresholdDb);
-    const float compressedDb = overThresholdDb * (1.0f - 1.0f / ratio);
-    const float targetReductionDb = juce::jmin (maximumDepthDb * cleanScale, compressedDb * cleanScale);
-    const float gainCoefficient = targetReductionDb > reductionDb
-                                      ? gainAttackCoefficient
-                                      : gainReleaseCoefficient;
-    reductionDb = targetReductionDb + gainCoefficient * (reductionDb - targetReductionDb);
-
-    const float removal = 1.0f - juce::Decibels::decibelsToGain (-reductionDb);
-    return input - bandSignal * removal;
-}
-
-JuiceEQAudioProcessor::ChannelDsp::ChannelDsp()
-{
-    auto initialise = [] (Filter& filter)
+    if (activationFadePosition < fadeLength)
     {
-        filter.coefficients = new Coefficients (1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
-    };
+        const float x = static_cast<float> (activationFadePosition + 1)
+                        / static_cast<float> (fadeLength);
+        const float mix = smoothstep (x);
+        result = drySample + (loopSample - drySample) * mix;
+    }
 
-    initialise (lowCut);
-    initialise (bell450);
-    initialise (bell2k);
-    initialise (bell8k);
-    initialise (shelf20k);
-    initialise (tubeHighPass);
-    initialise (tubeWetHighPass);
-    initialise (brightnessShelf);
+    if (ppqPerSample > 0.0)
+    {
+        const double samplesUntilBoundary = (nextBoundaryPpq - samplePpq) / ppqPerSample;
+
+        if (samplesUntilBoundary > 0.0
+            && samplesUntilBoundary <= static_cast<double> (fadeLength))
+        {
+            const float x = static_cast<float> (
+                1.0 - samplesUntilBoundary / static_cast<double> (fadeLength));
+            const float mix = smoothstep (x);
+            const int headIndex = juce::jlimit (
+                0, fadeLength - 1, static_cast<int> (std::floor (x * fadeLength)));
+            const float loopHead = getLoopSample (channel, headIndex);
+            result += (loopHead - result) * mix;
+        }
+    }
+
+    return result;
 }
 
-void JuiceEQAudioProcessor::ChannelDsp::prepare (double processingRate)
+void JuiceRepeaterAudioProcessor::advancePlayback() noexcept
 {
-    dynamicBands[0].frequency = 200.0f;
-    dynamicBands[0].q = 0.85f;
-    dynamicBands[0].thresholdDb = -36.0f;
-    dynamicBands[0].ratio = 2.4f;
-    dynamicBands[0].maximumDepthDb = 3.0f;
-
-    dynamicBands[1].frequency = 3600.0f;
-    dynamicBands[1].q = 2.0f;
-    dynamicBands[1].thresholdDb = -31.0f;
-    dynamicBands[1].ratio = 3.2f;
-    dynamicBands[1].maximumDepthDb = 5.0f;
-
-    dynamicBands[2].frequency = 10000.0f;
-    dynamicBands[2].q = 2.6f;
-    dynamicBands[2].thresholdDb = -34.0f;
-    dynamicBands[2].ratio = 3.5f;
-    dynamicBands[2].maximumDepthDb = 6.0f;
-
-    for (auto& band : dynamicBands)
-        band.prepare (processingRate);
-
-    lastProcessingRate = 0.0;
-    lastCleanScale = -1.0f;
-    lastBrightnessAmount = -1.0f;
-}
-
-void JuiceEQAudioProcessor::ChannelDsp::updateCoefficients (double processingRate,
-                                                            float cleanScale,
-                                                            float brightnessAmount)
-{
-    if (std::abs (processingRate - lastProcessingRate) < 0.5
-        && std::abs (cleanScale - lastCleanScale) < 0.0005f
-        && std::abs (brightnessAmount - lastBrightnessAmount) < 0.0005f)
+    if (loopLengthSamples <= 0)
         return;
 
-    lastProcessingRate = processingRate;
-    lastCleanScale = cleanScale;
-    lastBrightnessAmount = brightnessAmount;
+    playbackPosition = juce::jmin (playbackPosition + 1, loopLengthSamples - 1);
 
-    *lowCut.coefficients = ArrayCoefficients::makeHighPass (
-        processingRate, clampFrequency (lowCutFrequency, processingRate), 0.7071f);
-    *bell450.coefficients = ArrayCoefficients::makePeakFilter (
-        processingRate, clampFrequency (450.0f, processingRate), 0.90f,
-        juce::Decibels::decibelsToGain (1.0f * cleanScale));
-    *bell2k.coefficients = ArrayCoefficients::makePeakFilter (
-        processingRate, clampFrequency (2000.0f, processingRate), 1.00f,
-        juce::Decibels::decibelsToGain (2.5f * cleanScale));
-    *bell8k.coefficients = ArrayCoefficients::makePeakFilter (
-        processingRate, clampFrequency (8000.0f, processingRate), 0.82f,
-        juce::Decibels::decibelsToGain (3.0f * cleanScale));
-    *shelf20k.coefficients = ArrayCoefficients::makeHighShelf (
-        processingRate, clampFrequency (20000.0f, processingRate), 1.15f,
-        juce::Decibels::decibelsToGain (10.0f * cleanScale));
-    *tubeHighPass.coefficients = ArrayCoefficients::makeHighPass (
-        processingRate, clampFrequency (tubeFrequency, processingRate), 0.7071f);
-    *tubeWetHighPass.coefficients = ArrayCoefficients::makeHighPass (
-        processingRate, clampFrequency (tubeFrequency, processingRate), 0.7071f);
-    *brightnessShelf.coefficients = ArrayCoefficients::makeHighShelf (
-        processingRate, clampFrequency (tubeFrequency, processingRate), 0.66f,
-        juce::Decibels::decibelsToGain (10.0f * brightnessAmount));
+    if (activationFadePosition < crossfadeSamples)
+        ++activationFadePosition;
 }
 
-void JuiceEQAudioProcessor::ChannelDsp::reset() noexcept
+void JuiceRepeaterAudioProcessor::updateHostHistory (const HostPosition& position,
+                                                      int blockSize) noexcept
 {
-    lowCut.reset();
-    bell450.reset();
-    bell2k.reset();
-    bell8k.reset();
-    shelf20k.reset();
-    tubeHighPass.reset();
-    tubeWetHighPass.reset();
-    brightnessShelf.reset();
-
-    for (auto& band : dynamicBands)
-        band.reset();
+    previousPositionWasValid = position.valid;
+    previousPositionWasPlaying = position.playing;
+    previousPositionHadTimeInSamples = position.hasTimeInSamples;
+    previousBlockPpq = position.ppq;
+    previousBpm = position.bpm;
+    previousTimeInSamples = position.timeInSamples;
+    previousBlockSize = blockSize;
 }
 
-float JuiceEQAudioProcessor::ChannelDsp::process (float input,
-                                                  float cleanScale,
-                                                  float brightnessAmount) noexcept
+void JuiceRepeaterAudioProcessor::clearHostHistory() noexcept
 {
-    float sample = lowCut.processSample (input);
-    sample = dynamicBands[0].process (sample, cleanScale);
-    sample = bell450.processSample (sample);
-    sample = bell2k.processSample (sample);
-    sample = dynamicBands[1].process (sample, cleanScale);
-    sample = bell8k.processSample (sample);
-    sample = dynamicBands[2].process (sample, cleanScale);
-    sample = shelf20k.processSample (sample);
-
-    const float high = tubeHighPass.processSample (sample);
-    const float drive = 1.0f + brightnessAmount * 3.0f;
-    constexpr float bias = 0.22f;
-    const float biasTanh = std::tanh (bias);
-    const float normalisation = drive * (1.0f - biasTanh * biasTanh);
-    const float saturated = (std::tanh (drive * high + bias) - biasTanh)
-                            / juce::jmax (0.001f, normalisation);
-    const float tubeWet = tubeWetHighPass.processSample (saturated - high);
-    sample += tubeWet * brightnessAmount * 0.70f;
-
-    return brightnessShelf.processSample (sample);
+    previousPositionWasValid = false;
+    previousPositionWasPlaying = false;
+    previousPositionHadTimeInSamples = false;
+    previousBlockPpq = 0.0;
+    previousBpm = 120.0;
+    previousTimeInSamples = 0;
+    previousBlockSize = 0;
 }
 
-juce::AudioProcessorEditor* JuiceEQAudioProcessor::createEditor()
+juce::AudioProcessorEditor* JuiceRepeaterAudioProcessor::createEditor()
 {
-    return new JuiceEQAudioProcessorEditor (*this);
+    return new JuiceRepeaterAudioProcessorEditor (*this);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new JuiceEQAudioProcessor();
+    return new JuiceRepeaterAudioProcessor();
 }
